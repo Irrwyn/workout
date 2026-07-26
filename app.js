@@ -230,7 +230,8 @@ function renderSession(workoutId){
     const weightsHtml = ex.weights.map(wt => `
       <button class="weight-btn" data-action="tap-weight" data-workout="${w.id}" data-exercise="${ex.id}" data-weight="${wt}">${wt}</button>
     `).join('');
-    const lastLine = ex.lastLog ? `<div class="last">Last: ${ex.lastLog.map(v=>v===null?'—':v).join(' / ')}</div>` : '';
+    const lastFormatted = ex.lastLog ? formatSlots(ex.lastLog) : null;
+    const lastLine = lastFormatted ? `<div class="last">Last: ${lastFormatted}</div>` : '';
 
     return `
       <div class="exercise-session-card">
@@ -238,13 +239,13 @@ function renderSession(workoutId){
           <div>
             <h3>${escapeHtml(ex.name)}</h3>
             <div class="meta">${ex.sets} × ${ex.reps} reps</div>
+            ${lastLine}
           </div>
           ${ex.image ? `<img src="${ex.image}" class="exercise-thumb" data-action="preview-image" data-exercise="${ex.id}">` : ''}
         </div>
         <div class="slots">${slotsHtml}</div>
         ${ex.weights.length ? `<div class="weight-buttons">${weightsHtml}</div>` : `<div class="small-muted">No weights set up for this exercise.</div>`}
-        <div class="row" style="justify-content:space-between;align-items:center">
-          ${lastLine}
+        <div class="row" style="justify-content:flex-end">
           <button class="reset-link" data-action="reset-exercise" data-workout="${w.id}" data-exercise="${ex.id}">reset</button>
         </div>
       </div>
@@ -262,6 +263,21 @@ function renderSession(workoutId){
       <div class="footer-space"></div>
     </div>
   `;
+}
+
+// ---------- formatting ----------
+// turns [43,43,45,45] into "2x43 + 2x45"
+function formatSlots(slots){
+  if(!slots || slots.every(s => s === null)) return null;
+  const groups = [];
+  for(const s of slots){
+    if(s === null) continue;
+    const last = groups[groups.length - 1];
+    if(last && last.weight === s) last.count++;
+    else groups.push({ weight: s, count: 1 });
+  }
+  if(groups.length === 0) return null;
+  return groups.map(g => `${g.count}x${g.weight}`).join(' + ');
 }
 
 // ---------- escaping ----------
