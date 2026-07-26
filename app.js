@@ -1,3 +1,7 @@
+import {
+  auth, db, signIn, signOutUser, onAuthStateChanged, doc, setDoc, getDoc, onSnapshot
+} from './firebase-init.js';
+
 // ---------- storage ----------
 const STORAGE_KEY = 'workoutAppData_v1';
 
@@ -9,9 +13,50 @@ function loadData(){
   return { workouts: [] };
 }
 
+// true while we're writing data that just came FROM the cloud, so we don't echo it right back up
+let applyingRemote = false;
+let cloudSaveTimer = null;
+let currentUser = null;
+let unsubscribeSnapshot = null;
+
+function cloudDocRef(uid){ return doc(db, 'users', uid); }
+
 function saveData(){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  if(currentUser && !applyingRemote){
+    clearTimeout(cloudSaveTimer);
+    cloudSaveTimer = setTimeout(() => {
+      setDoc(cloudDocRef(currentUser.uid), { payload: JSON.stringify(data), updatedAt: Date.now() }).catch(()=>{});
+    }, 600);
+  }
 }
+
+onAuthStateChanged(auth, async (user) => {
+  currentUser = user;
+  if(unsubscribeSnapshot){ unsubscribeSnapshot(); unsubscribeSnapshot = null; }
+
+  if(user){
+    const ref = cloudDocRef(user.uid);
+    const snap = await getDoc(ref);
+    if(snap.exists()){
+      applyingRemote = true;
+      data = JSON.parse(snap.data().payload);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      applyingRemote = false;
+    } else {
+      await setDoc(ref, { payload: JSON.stringify(data), updatedAt: Date.now() });
+    }
+    unsubscribeSnapshot = onSnapshot(ref, (snap) => {
+      if(!snap.exists()) return;
+      applyingRemote = true;
+      data = JSON.parse(snap.data().payload);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      applyingRemote = false;
+      render();
+    });
+  }
+  render();
+});
 
 let data = loadData();
 
@@ -110,6 +155,9 @@ function renderHome(){
   return `
     <div class="topbar">
       <div class="title"><h1>Workout</h1></div>
+      ${currentUser
+        ? `<button class="icon-btn" data-action="sign-out" title="Signed in as ${escapeAttr(currentUser.email || currentUser.displayName || '')} — tap to sign out">☁️✓</button>`
+        : `<button class="icon-btn" data-action="sign-in" title="Sign in to sync across devices">☁️</button>`}
       <button class="icon-btn" data-action="goto-edit-list" title="Edit workouts">✎</button>
     </div>
     <div class="stack">
@@ -295,7 +343,13 @@ function attachHandlers(){
     if(!btn) return;
     const action = btn.dataset.action;
 
-    if(action === 'goto-home') setView({name:'home'});
+    if(action === 'sign-in'){
+      signIn().catch(err => alert('Sign-in failed: ' + err.message));
+    }
+    else if(action === 'sign-out'){
+      if(confirm('Sign out? Your data will stay on this device but stop syncing.')) signOutUser();
+    }
+    else if(action === 'goto-home') setView({name:'home'});
     else if(action === 'goto-edit-list') setView({name:'editList'});
     else if(action === 'start') setView({name:'session', workoutId: btn.dataset.workout});
     else if(action === 'edit-workout') setView({name:'editWorkout', workoutId: btn.dataset.workout});
