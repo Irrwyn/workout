@@ -131,6 +131,26 @@ input[type="text"], input[type="number"]{
 }
 input[type="number"]{width:70px;text-align:center;}
 
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button{
+  -webkit-appearance:none;
+  margin:0;
+}
+input[type="number"]{
+  -moz-appearance:textfield;
+  appearance:textfield;
+}
+
+.exercise-thumb{
+  width:56px;
+  height:56px;
+  object-fit:cover;
+  border-radius:10px;
+  border:1px solid var(--border);
+  flex-shrink:0;
+  cursor:pointer;
+}
+
 label.field{
   display:flex;
   flex-direction:column;

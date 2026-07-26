@@ -182,6 +182,17 @@ function renderEditWorkout(workoutId){
           </span>
         </div>
       </label>
+      <label class="field">
+        Picture / GIF
+        <div class="row" style="gap:10px;align-items:center">
+          ${ex.image ? `<img src="${ex.image}" class="exercise-thumb" data-action="preview-image" data-exercise="${ex.id}">` : ''}
+          <label class="btn ghost" style="cursor:pointer">
+            ${ex.image ? 'Replace' : 'Add image'}
+            <input type="file" accept="image/*" data-image-input="${ex.id}" style="display:none">
+          </label>
+          ${ex.image ? `<button class="danger-text" style="background:none" data-action="remove-image" data-exercise="${ex.id}">Remove</button>` : ''}
+        </div>
+      </label>
       <button class="danger-text" style="background:none;align-self:flex-start" data-action="delete-exercise" data-exercise="${ex.id}">Delete exercise</button>
     </div>
   `).join('');
@@ -228,6 +239,7 @@ function renderSession(workoutId){
             <h3>${escapeHtml(ex.name)}</h3>
             <div class="meta">${ex.sets} × ${ex.reps} reps</div>
           </div>
+          ${ex.image ? `<img src="${ex.image}" class="exercise-thumb" data-action="preview-image" data-exercise="${ex.id}">` : ''}
         </div>
         <div class="slots">${slotsHtml}</div>
         ${ex.weights.length ? `<div class="weight-buttons">${weightsHtml}</div>` : `<div class="small-muted">No weights set up for this exercise.</div>`}
@@ -289,9 +301,21 @@ function attachHandlers(){
 
     else if(action === 'add-exercise'){
       const w = getWorkout(btn.dataset.workout);
-      w.exercises.push({ id: uid(), name: '', sets: 4, reps: 10, weights: [], slots: null, lastLog: null });
+      w.exercises.push({ id: uid(), name: '', sets: 4, reps: 10, weights: [], slots: null, lastLog: null, image: null });
       saveData();
       render();
+    }
+
+    else if(action === 'remove-image'){
+      const w = getWorkout(view.workoutId);
+      const ex = getExercise(w, btn.dataset.exercise);
+      ex.image = null;
+      saveData();
+      render();
+    }
+
+    else if(action === 'preview-image'){
+      window.open(btn.src, '_blank');
     }
 
     else if(action === 'delete-exercise'){
@@ -337,6 +361,24 @@ function attachHandlers(){
       const w = getWorkout(btn.dataset.workout);
       const ex = getExercise(w, btn.dataset.exercise);
       resetExerciseSlots(w, ex);
+    }
+  };
+
+  app.onchange = (e) => {
+    const t = e.target;
+    if(t.dataset.imageInput){
+      const file = t.files && t.files[0];
+      if(!file) return;
+      const exId = t.dataset.imageInput;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const w = getWorkout(view.workoutId);
+        const ex = getExercise(w, exId);
+        ex.image = reader.result;
+        saveData();
+        render();
+      };
+      reader.readAsDataURL(file);
     }
   };
 
