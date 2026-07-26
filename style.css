@@ -21,9 +21,7 @@
 html,body{
   margin:0;
   padding:0;
-  background:
-    radial-gradient(ellipse 900px 500px at 15% -10%, rgba(255,44,59,0.10), transparent 60%),
-    var(--bg);
+  background:var(--bg);
   color:var(--ink);
   font-family:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
   overscroll-behavior-y:none;
@@ -64,18 +62,7 @@ p{margin:0;}
   border-bottom:2px solid var(--line);
   padding-bottom:14px;
 }
-.topbar::before{
-  content:'';
-}
-
-.topbar .title{flex:1;min-width:0;position:relative;padding-left:12px;}
-.topbar .title::before{
-  content:'';
-  position:absolute;
-  left:0; top:2px; bottom:2px;
-  width:4px;
-  background:var(--red);
-}
+.topbar .title{flex:1;min-width:0;}
 .topbar .title h1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 
 button, .btn{
@@ -113,7 +100,6 @@ button:active{transform:scale(0.96);}
   width:100%;
   background:var(--bg2);
   border:1px solid var(--line);
-  border-left:4px solid var(--red);
   padding:18px 16px;
   border-radius:var(--radius);
   font-size:18px;
@@ -240,7 +226,6 @@ label.field{
 .exercise-session-card{
   background:var(--bg2);
   border:1px solid var(--line);
-  border-left:4px solid var(--red);
   border-radius:var(--radius);
   padding:16px;
   display:flex;
@@ -371,14 +356,12 @@ label.field{
 .save-btn{
   font-size:16px;
   padding:16px;
-  box-shadow:0 0 0 1px var(--red-dim), 0 8px 24px rgba(255,44,59,0.25);
 }
 
 /* ---------- history ---------- */
 .history-card{
   background:var(--bg2);
   border:1px solid var(--line);
-  border-left:4px solid var(--red);
   border-radius:var(--radius);
   padding:14px 16px;
   display:flex;
