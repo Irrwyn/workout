@@ -88,6 +88,7 @@ button:active{transform:scale(0.96);}
   color:var(--dim);
 }
 .icon-btn:active{background:var(--bg2);}
+.icon-btn.active{color:var(--red);background:var(--bg2);}
 
 .stack{display:flex;flex-direction:column;gap:12px;}
 .row{display:flex;gap:10px;align-items:center;}
@@ -118,6 +119,13 @@ button:active{transform:scale(0.96);}
   margin-top:4px;
 }
 .workout-btn .chev{color:var(--red);font-size:20px;font-weight:900;}
+
+.workout-btn.locked{
+  opacity:0.45;
+  cursor:not-allowed;
+}
+.workout-btn.locked .chev{color:var(--dim);font-size:17px;}
+.workout-btn.locked:active{transform:none;}
 
 .card{
   background:var(--bg2);
@@ -281,6 +289,28 @@ label.field{
   border-color:var(--red);
   background:rgba(255,44,59,0.12);
   color:var(--red);
+}
+
+.set-toggle{
+  display:flex;
+  gap:8px;
+}
+.set-toggle-btn{
+  flex:1;
+  background:var(--bg);
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  padding:8px 0;
+  font-size:12px;
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:0.04em;
+  color:var(--dim);
+}
+.set-toggle-btn.active{
+  border-color:var(--red);
+  color:var(--red);
+  background:rgba(255,44,59,0.12);
 }
 
 .weight-buttons{

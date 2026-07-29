@@ -4,17 +4,38 @@ import {
 
 // ---------- storage ----------
 const STORAGE_KEY = 'workoutAppData_v1';
+const LOCK_MS = 24 * 60 * 60 * 1000;
+
+// migrates old-shape data in place: single flat `weights` array -> two named
+// weightSets (a/b), missing activeLock/history defaults.
+function normalizeData(d){
+  if(!d.history) d.history = [];
+  if(!('activeLock' in d)) d.activeLock = null;
+  d.workouts.forEach(w => w.exercises.forEach(ex => {
+    if(!ex.weightSets){
+      ex.weightSets = { a: Array.isArray(ex.weights) ? ex.weights : [], b: [] };
+      delete ex.weights;
+    }
+    if(!ex.activeSet) ex.activeSet = 'a';
+  }));
+  return d;
+}
 
 function loadData(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
     if(raw){
-      const parsed = JSON.parse(raw);
-      if(!parsed.history) parsed.history = [];
-      return parsed;
+      return normalizeData(JSON.parse(raw));
     }
   }catch(e){}
-  return { workouts: [], history: [] };
+  return { workouts: [], history: [], activeLock: null };
+}
+
+function isLockActive(){
+  return !!(data.activeLock && (Date.now() - data.activeLock.startedAt < LOCK_MS));
+}
+function isWorkoutLocked(workoutId){
+  return isLockActive() && data.activeLock.workoutId !== workoutId;
 }
 
 // true while we're writing data that just came FROM the cloud, so we don't echo it right back up
@@ -44,8 +65,7 @@ onAuthStateChanged(auth, async (user) => {
     const snap = await getDoc(ref);
     if(snap.exists()){
       applyingRemote = true;
-      data = JSON.parse(snap.data().payload);
-      if(!data.history) data.history = [];
+      data = normalizeData(JSON.parse(snap.data().payload));
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       applyingRemote = false;
     } else {
@@ -56,8 +76,7 @@ onAuthStateChanged(auth, async (user) => {
       // skip echoes of our own writes so typing doesn't get interrupted by a re-render
       if(snap.metadata.hasPendingWrites) return;
       applyingRemote = true;
-      data = JSON.parse(snap.data().payload);
-      if(!data.history) data.history = [];
+      data = normalizeData(JSON.parse(snap.data().payload));
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       applyingRemote = false;
       render();
@@ -125,8 +144,26 @@ function tapWeight(workout, exercise, weight){
   render();
 }
 
-// finalize the current session: whatever is filled becomes "last performance",
-// gets appended to history, then the board clears for next time.
+// begins a brand-new locked session for this workout: blanks its slots and
+// starts a fresh 24h lock. lastLog is untouched here — it only ever gets set
+// by an explicit Save, so "last time" never reflects abandoned scratch input.
+function startFreshSession(workoutId){
+  const w = getWorkout(workoutId);
+  if(!w) return;
+  w.exercises.forEach(ex => {
+    ensureRuntime(ex);
+    ex.slots = defaultSlots(ex.sets);
+    seqState[ex.id] = [];
+  });
+  data.activeLock = { id: uid(), workoutId, startedAt: Date.now() };
+  saveData();
+}
+
+// logs whatever's currently filled in as "last performance" and upserts a
+// history entry for the active lock (so re-saving the same locked session
+// overrides its own history entry instead of piling up duplicates). Slots
+// are deliberately left as-is so the session can be re-entered and edited
+// again later in the 24h window.
 function saveSession(workoutId){
   const w = getWorkout(workoutId);
   if(!w) return;
@@ -134,24 +171,29 @@ function saveSession(workoutId){
   const loggedExercises = [];
   w.exercises.forEach(ex => {
     ensureRuntime(ex);
-    const hasAny = ex.slots.some(s => s !== null);
-    if(hasAny){
+    if(ex.slots.some(s => s !== null)){
       ex.lastLog = ex.slots.slice();
       loggedExercises.push({ name: ex.name, sets: ex.sets, reps: ex.reps, slots: ex.slots.slice() });
     }
-    ex.slots = defaultSlots(ex.sets);
-    seqState[ex.id] = [];
   });
 
+  const lockId = (data.activeLock && data.activeLock.workoutId === workoutId) ? data.activeLock.id : null;
+  const existingIdx = lockId ? data.history.findIndex(h => h.lockId === lockId) : -1;
+
   if(loggedExercises.length){
-    data.history.unshift({
-      id: uid(),
+    const entry = {
+      id: existingIdx >= 0 ? data.history[existingIdx].id : uid(),
+      lockId,
       workoutId: w.id,
       workoutName: w.name,
       date: Date.now(),
       exercises: loggedExercises
-    });
-    if(data.history.length > 200) data.history.length = 200;
+    };
+    if(existingIdx >= 0) data.history[existingIdx] = entry;
+    else {
+      data.history.unshift(entry);
+      if(data.history.length > 200) data.history.length = 200;
+    }
   }
 
   saveData();
@@ -174,21 +216,23 @@ function showToast(msg){
   toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
 }
 
-// adds whatever's in the exercise's "add weight" input, then clears + refocuses it
-// so the user can keep typing more weights without re-tapping the field each time.
-function addWeight(exId){
+// adds whatever's in the exercise's "add weight" input for the given set (a/b),
+// then clears + refocuses it so the user can keep typing more weights without
+// re-tapping the field each time.
+function addWeight(exId, set){
   const app = document.getElementById('app');
   const w = getWorkout(view.workoutId);
   const ex = getExercise(w, exId);
-  const input = app.querySelector(`[data-new-weight="${exId}"]`);
+  const selector = `[data-new-weight="${exId}"][data-set="${set}"]`;
+  const input = app.querySelector(selector);
   const val = parseFloat(input.value);
   if(!isNaN(val)){
-    ex.weights.push(val);
-    ex.weights.sort((a,b)=>a-b);
+    ex.weightSets[set].push(val);
+    ex.weightSets[set].sort((a,b)=>a-b);
     saveData();
   }
   render();
-  const newInput = document.getElementById('app').querySelector(`[data-new-weight="${exId}"]`);
+  const newInput = document.getElementById('app').querySelector(selector);
   if(newInput) newInput.focus();
 }
 
@@ -202,7 +246,7 @@ function resetExerciseSlots(workout, exercise){
 // ---------- render root ----------
 // re-rendering replaces the whole #app subtree, which would normally kill focus/cursor
 // position and the on-screen keyboard mid-keystroke; save + restore it around the swap.
-const FOCUS_ATTRS = ['data-field', 'data-exercise', 'data-new-weight', 'data-workout', 'data-image-input'];
+const FOCUS_ATTRS = ['data-field', 'data-exercise', 'data-new-weight', 'data-workout', 'data-image-input', 'data-set'];
 
 function captureFocus(app){
   const el = document.activeElement;
@@ -244,15 +288,18 @@ function render(){
 
 // ---------- HOME ----------
 function renderHome(){
-  const list = data.workouts.map(w => `
-    <button class="workout-btn" data-action="start" data-workout="${w.id}">
+  const list = data.workouts.map(w => {
+    const locked = isWorkoutLocked(w.id);
+    return `
+    <button class="workout-btn${locked ? ' locked' : ''}" ${locked ? 'disabled' : `data-action="start"`} data-workout="${w.id}">
       <span>
         ${escapeHtml(w.name)}
-        <span class="sub">${w.exercises.length} exercise${w.exercises.length===1?'':'s'}</span>
+        <span class="sub">${w.exercises.length} exercise${w.exercises.length===1?'':'s'}${locked ? ' · Locked' : ''}</span>
       </span>
-      <span class="chev">›</span>
+      <span class="chev">${locked ? '🔒' : '›'}</span>
     </button>
-  `).join('');
+  `;
+  }).join('');
 
   const empty = data.workouts.length === 0 ? `
     <div class="empty-state">
@@ -340,6 +387,31 @@ function renderEditList(){
   `;
 }
 
+// chip list + add-input for one weight set (a/b) of an exercise. Shared by the
+// Edit Workout screen (both sets shown) and the session's inline edit mode
+// (just the currently active set).
+function renderWeightEditor(ex, set){
+  const label = set === 'a' ? 'Type A' : 'Type B';
+  const chips = ex.weightSets[set].map((wt,i) => `
+    <span class="weight-chip">
+      ${wt}
+      <button data-action="remove-weight" data-exercise="${ex.id}" data-set="${set}" data-index="${i}">×</button>
+    </span>
+  `).join('');
+  return `
+    <label class="field">
+      Weight options — ${label}
+      <div class="row wrap" style="margin-top:4px">
+        ${chips}
+        <span class="row" style="gap:6px">
+          <input type="number" inputmode="decimal" step="any" placeholder="add" style="width:70px" data-new-weight="${ex.id}" data-set="${set}">
+          <button data-action="add-weight" data-exercise="${ex.id}" data-set="${set}">+</button>
+        </span>
+      </div>
+    </label>
+  `;
+}
+
 // ---------- EDIT WORKOUT ----------
 function renderEditWorkout(workoutId){
   const w = getWorkout(workoutId);
@@ -363,21 +435,8 @@ function renderEditWorkout(workoutId){
           <input type="number" inputmode="numeric" min="1" max="100" data-field="reps" data-exercise="${ex.id}" value="${ex.reps}">
         </label>
       </div>
-      <label class="field">
-        Weight options
-        <div class="row wrap" style="margin-top:4px">
-          ${ex.weights.map((wt,i) => `
-            <span class="weight-chip">
-              ${wt}
-              <button data-action="remove-weight" data-exercise="${ex.id}" data-index="${i}">×</button>
-            </span>
-          `).join('')}
-          <span class="row" style="gap:6px">
-            <input type="number" inputmode="decimal" step="any" placeholder="add" style="width:70px" data-new-weight="${ex.id}">
-            <button data-action="add-weight" data-exercise="${ex.id}">+</button>
-          </span>
-        </div>
-      </label>
+      ${renderWeightEditor(ex, 'a')}
+      ${renderWeightEditor(ex, 'b')}
       <label class="field">
         Picture / GIF
         <div class="row" style="gap:10px;align-items:center">
@@ -418,16 +477,26 @@ function renderSession(workoutId){
   const w = getWorkout(workoutId);
   if(!w){ setView({name:'home'}); return ''; }
 
+  const editMode = !!view.editMode;
+
   const cards = w.exercises.map(ex => {
     ensureRuntime(ex);
     const slotsHtml = ex.slots.map(s => `
       <div class="slot ${s!==null?'filled':''}">${s!==null ? s : '—'}</div>
     `).join('');
-    const weightsHtml = ex.weights.map(wt => `
+    const activeWeights = ex.weightSets[ex.activeSet];
+    const weightsHtml = activeWeights.map(wt => `
       <button class="weight-btn" data-action="tap-weight" data-workout="${w.id}" data-exercise="${ex.id}" data-weight="${wt}">${wt}</button>
     `).join('');
     const lastFormatted = ex.lastLog ? formatSlots(ex.lastLog) : null;
     const lastLine = lastFormatted ? `<div class="last">Last time: ${lastFormatted}</div>` : `<div class="last muted-italic">No history yet</div>`;
+
+    const typeToggle = `
+      <div class="set-toggle">
+        <button class="set-toggle-btn ${ex.activeSet==='a'?'active':''}" data-action="select-weight-set" data-exercise="${ex.id}" data-set="a">Type A</button>
+        <button class="set-toggle-btn ${ex.activeSet==='b'?'active':''}" data-action="select-weight-set" data-exercise="${ex.id}" data-set="b">Type B</button>
+      </div>
+    `;
 
     return `
       <div class="exercise-session-card">
@@ -440,7 +509,9 @@ function renderSession(workoutId){
           ${ex.image ? `<img src="${ex.image}" class="exercise-thumb" data-action="preview-image" data-exercise="${ex.id}">` : ''}
         </div>
         <div class="slots">${slotsHtml}</div>
-        ${ex.weights.length ? `<div class="weight-buttons">${weightsHtml}</div>` : `<div class="small-muted">No weights set up for this exercise.</div>`}
+        ${typeToggle}
+        ${activeWeights.length ? `<div class="weight-buttons">${weightsHtml}</div>` : `<div class="small-muted">No weights set up for this set.</div>`}
+        ${editMode ? renderWeightEditor(ex, ex.activeSet) : ''}
         <div class="row" style="justify-content:flex-end">
           <button class="reset-link" data-action="reset-exercise" data-workout="${w.id}" data-exercise="${ex.id}">reset</button>
         </div>
@@ -452,7 +523,7 @@ function renderSession(workoutId){
     <div class="topbar">
       <button class="icon-btn" data-action="goto-home">←</button>
       <div class="title"><h1>${escapeHtml(w.name)}</h1></div>
-      <span style="width:36px"></span>
+      <button class="icon-btn ${editMode?'active':''}" data-action="toggle-edit-mode" title="Edit weights inline">✎</button>
     </div>
     <div class="stack session-stack">
       ${cards}
@@ -502,10 +573,24 @@ function attachHandlers(){
     }
     else if(action === 'goto-home') setView({name:'home'});
     else if(action === 'goto-edit-list') setView({name:'editList'});
-    else if(action === 'start') setView({name:'session', workoutId: btn.dataset.workout});
+    else if(action === 'start'){
+      const workoutId = btn.dataset.workout;
+      if(isWorkoutLocked(workoutId)) return;
+      const resuming = data.activeLock && data.activeLock.workoutId === workoutId && isLockActive();
+      if(!resuming) startFreshSession(workoutId);
+      setView({name:'session', workoutId});
+    }
     else if(action === 'edit-workout') setView({name:'editWorkout', workoutId: btn.dataset.workout});
     else if(action === 'goto-history') setView({name:'history'});
     else if(action === 'save-session') saveSession(btn.dataset.workout);
+    else if(action === 'toggle-edit-mode') setView({ ...view, editMode: !view.editMode });
+    else if(action === 'select-weight-set'){
+      const w = getWorkout(view.workoutId);
+      const ex = getExercise(w, btn.dataset.exercise);
+      ex.activeSet = btn.dataset.set;
+      saveData();
+      render();
+    }
 
     else if(action === 'add-workout'){
       const w = { id: uid(), name: 'New Workout', exercises: [] };
@@ -516,7 +601,9 @@ function attachHandlers(){
 
     else if(action === 'delete-workout'){
       if(confirm('Delete this workout?')){
-        data.workouts = data.workouts.filter(w => w.id !== btn.dataset.workout);
+        const workoutId = btn.dataset.workout;
+        data.workouts = data.workouts.filter(w => w.id !== workoutId);
+        if(data.activeLock && data.activeLock.workoutId === workoutId) data.activeLock = null;
         saveData();
         setView({name:'editList'});
       }
@@ -524,7 +611,7 @@ function attachHandlers(){
 
     else if(action === 'add-exercise'){
       const w = getWorkout(btn.dataset.workout);
-      w.exercises.push({ id: uid(), name: '', sets: 4, reps: 10, weights: [], slots: null, lastLog: null, image: null });
+      w.exercises.push({ id: uid(), name: '', sets: 4, reps: 10, weightSets: {a:[], b:[]}, activeSet: 'a', slots: null, lastLog: null, image: null });
       saveData();
       render();
     }
@@ -550,15 +637,16 @@ function attachHandlers(){
     }
 
     else if(action === 'add-weight'){
-      addWeight(btn.dataset.exercise);
+      addWeight(btn.dataset.exercise, btn.dataset.set);
     }
 
     else if(action === 'remove-weight'){
       const exId = btn.dataset.exercise;
+      const set = btn.dataset.set;
       const idx = parseInt(btn.dataset.index,10);
       const w = getWorkout(view.workoutId);
       const ex = getExercise(w, exId);
-      ex.weights.splice(idx,1);
+      ex.weightSets[set].splice(idx,1);
       saveData();
       render();
     }
@@ -586,7 +674,7 @@ function attachHandlers(){
   app.onkeydown = (e) => {
     if(e.key === 'Enter' && e.target.dataset.newWeight){
       e.preventDefault();
-      addWeight(e.target.dataset.newWeight);
+      addWeight(e.target.dataset.newWeight, e.target.dataset.set);
     }
   };
 
