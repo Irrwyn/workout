@@ -17,6 +17,7 @@ function normalizeData(d){
       delete ex.weights;
     }
     if(!ex.activeSet) ex.activeSet = 'a';
+    if(!('baselineLog' in ex)) ex.baselineLog = null;
   }));
   return d;
 }
@@ -114,6 +115,15 @@ function defaultSlots(sets){
   return new Array(sets).fill(null);
 }
 
+// a slot counts as an "upgrade" if it beats the same slot index in the
+// session's baseline (the performance recorded before this session started).
+function isUpgradeSlot(ex, index){
+  const s = ex.slots[index];
+  if(s === null || !ex.baselineLog) return false;
+  const base = ex.baselineLog[index];
+  return base != null && s > base;
+}
+
 function ensureRuntime(exercise){
   if(!exercise.slots || exercise.slots.length !== exercise.sets){
     exercise.slots = defaultSlots(exercise.sets);
@@ -147,12 +157,15 @@ function tapWeight(workout, exercise, weight){
 // begins a brand-new locked session for this workout: blanks its slots and
 // starts a fresh 24h lock. lastLog is untouched here — it only ever gets set
 // by an explicit Save, so "last time" never reflects abandoned scratch input.
+// baselineLog snapshots the previous performance so upgrade-highlighting has
+// a stable target for this whole session, even across multiple saves.
 function startFreshSession(workoutId){
   const w = getWorkout(workoutId);
   if(!w) return;
   w.exercises.forEach(ex => {
     ensureRuntime(ex);
     ex.slots = defaultSlots(ex.sets);
+    ex.baselineLog = ex.lastLog ? ex.lastLog.slice() : null;
     seqState[ex.id] = [];
   });
   data.activeLock = { id: uid(), workoutId, startedAt: Date.now() };
@@ -172,8 +185,9 @@ function saveSession(workoutId){
   w.exercises.forEach(ex => {
     ensureRuntime(ex);
     if(ex.slots.some(s => s !== null)){
+      const upgrades = ex.slots.map((s,i) => isUpgradeSlot(ex, i));
       ex.lastLog = ex.slots.slice();
-      loggedExercises.push({ name: ex.name, sets: ex.sets, reps: ex.reps, slots: ex.slots.slice() });
+      loggedExercises.push({ name: ex.name, sets: ex.sets, reps: ex.reps, slots: ex.slots.slice(), upgrades });
     }
   });
 
@@ -331,7 +345,7 @@ function renderHistory(){
     const exList = h.exercises.map(ex => `
       <div class="history-exercise">
         <span class="history-exercise-name">${escapeHtml(ex.name)}</span>
-        <span class="history-exercise-log">${formatSlots(ex.slots) || '—'}</span>
+        <span class="history-exercise-log">${formatSlotsHtml(ex.slots, ex.upgrades) || '—'}</span>
       </div>
     `).join('');
     return `
@@ -481,22 +495,27 @@ function renderSession(workoutId){
 
   const cards = w.exercises.map(ex => {
     ensureRuntime(ex);
-    const slotsHtml = ex.slots.map(s => `
-      <div class="slot ${s!==null?'filled':''}">${s!==null ? s : '—'}</div>
+    const slotsHtml = ex.slots.map((s,i) => `
+      <div class="slot ${s!==null?'filled':''} ${isUpgradeSlot(ex,i)?'upgrade':''}">${s!==null ? s : '—'}</div>
     `).join('');
-    const activeWeights = ex.weightSets[ex.activeSet];
+    // outside edit mode, don't strand the user on an empty Type B with no way back
+    const displaySet = (!editMode && ex.activeSet === 'b' && ex.weightSets.b.length === 0) ? 'a' : ex.activeSet;
+    const activeWeights = ex.weightSets[displaySet];
     const weightsHtml = activeWeights.map(wt => `
       <button class="weight-btn" data-action="tap-weight" data-workout="${w.id}" data-exercise="${ex.id}" data-weight="${wt}">${wt}</button>
     `).join('');
     const lastFormatted = ex.lastLog ? formatSlots(ex.lastLog) : null;
     const lastLine = lastFormatted ? `<div class="last">Last time: ${lastFormatted}</div>` : `<div class="last muted-italic">No history yet</div>`;
 
-    const typeToggle = `
+    // toggle is only useful mid-edit (to reach Type B and add weights) or once
+    // Type B actually has something in it — otherwise it's just dead chrome.
+    const showToggle = editMode || ex.weightSets.b.length > 0;
+    const typeToggle = showToggle ? `
       <div class="set-toggle">
-        <button class="set-toggle-btn ${ex.activeSet==='a'?'active':''}" data-action="select-weight-set" data-exercise="${ex.id}" data-set="a">Type A</button>
-        <button class="set-toggle-btn ${ex.activeSet==='b'?'active':''}" data-action="select-weight-set" data-exercise="${ex.id}" data-set="b">Type B</button>
+        <button class="set-toggle-btn ${displaySet==='a'?'active':''}" data-action="select-weight-set" data-exercise="${ex.id}" data-set="a">Type A</button>
+        <button class="set-toggle-btn ${displaySet==='b'?'active':''}" data-action="select-weight-set" data-exercise="${ex.id}" data-set="b">Type B</button>
       </div>
-    `;
+    ` : '';
 
     return `
       <div class="exercise-session-card">
@@ -511,7 +530,7 @@ function renderSession(workoutId){
         <div class="slots">${slotsHtml}</div>
         ${typeToggle}
         ${activeWeights.length ? `<div class="weight-buttons">${weightsHtml}</div>` : `<div class="small-muted">No weights set up for this set.</div>`}
-        ${editMode ? renderWeightEditor(ex, ex.activeSet) : ''}
+        ${editMode ? renderWeightEditor(ex, displaySet) : ''}
         <div class="row" style="justify-content:flex-end">
           <button class="reset-link" data-action="reset-exercise" data-workout="${w.id}" data-exercise="${ex.id}">reset</button>
         </div>
@@ -548,6 +567,23 @@ function formatSlots(slots){
   }
   if(groups.length === 0) return null;
   return groups.map(g => `${g.count}x${g.weight}`).join(' + ');
+}
+
+// like formatSlots, but wraps groups that were an upgrade over that session's
+// baseline in a magenta span — used only in History, which is a frozen record.
+function formatSlotsHtml(slots, upgrades){
+  if(!slots || slots.every(s => s === null)) return null;
+  const groups = [];
+  for(let i=0;i<slots.length;i++){
+    const s = slots[i];
+    if(s === null) continue;
+    const up = !!(upgrades && upgrades[i]);
+    const last = groups[groups.length - 1];
+    if(last && last.weight === s && last.up === up) last.count++;
+    else groups.push({ weight: s, count: 1, up });
+  }
+  if(groups.length === 0) return null;
+  return groups.map(g => `<span class="${g.up ? 'upgrade-text' : ''}">${g.count}x${g.weight}</span>`).join(' + ');
 }
 
 // ---------- escaping ----------
@@ -714,6 +750,7 @@ function attachHandlers(){
       ex.sets = (n>0) ? n : 1;
       ex.slots = defaultSlots(ex.sets);
       ex.lastLog = null;
+      ex.baselineLog = null;
       saveData();
     } else if(t.dataset.field === 'reps'){
       const w = getWorkout(view.workoutId);

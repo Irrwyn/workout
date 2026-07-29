@@ -11,6 +11,7 @@
   --red:#ff2c3b;
   --red-dim:#5c1620;
   --red-ink:#150304;
+  --magenta:#ff2ee0;
   --radius:6px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -290,6 +291,11 @@ label.field{
   background:rgba(255,44,59,0.12);
   color:var(--red);
 }
+.slot.filled.upgrade{
+  border-color:var(--magenta);
+  background:rgba(255,46,224,0.14);
+  color:var(--magenta);
+}
 
 .set-toggle{
   display:flex;
@@ -425,6 +431,7 @@ label.field{
 }
 .history-exercise-name{color:var(--ink);}
 .history-exercise-log{color:var(--red);font-weight:700;font-variant-numeric:tabular-nums;}
+.history-exercise-log .upgrade-text{color:var(--magenta);}
 
 /* ---------- toast ---------- */
 #toast{
