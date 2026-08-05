@@ -297,6 +297,12 @@ label.field{
   color:var(--magenta);
 }
 
+.slots-edit input[type="number"]{
+  width:52px;
+  height:44px;
+  padding:0 4px;
+}
+
 .set-toggle{
   display:flex;
   gap:8px;

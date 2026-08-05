@@ -146,6 +146,27 @@ function getExercise(workout, id){
   return workout.exercises.find(e => e.id === id);
 }
 
+function normalizeExerciseName(name){
+  return (name || '').trim().toLowerCase();
+}
+
+// finds the most recently logged slots for an exercise name, regardless of
+// which workout it was performed under, so "Abdominals" in one workout shares
+// its history with "Abdominals" in another. Searches by date (not array
+// position — a re-saved entry keeps its original array slot but gets a fresh
+// date) so the true latest save always wins.
+function findLastLoggedSlots(exerciseName){
+  const target = normalizeExerciseName(exerciseName);
+  if(!target) return null;
+  let best = null;
+  for(const h of data.history){
+    const match = h.exercises.find(e => normalizeExerciseName(e.name) === target);
+    if(!match || !match.slots || !match.slots.some(s => s !== null)) continue;
+    if(!best || h.date > best.date) best = { date: h.date, slots: match.slots };
+  }
+  return best ? best.slots.slice() : null;
+}
+
 function defaultSlots(sets){
   return new Array(sets).fill(null);
 }
@@ -190,28 +211,26 @@ function tapWeight(workout, exercise, weight){
 }
 
 // begins a brand-new locked session for this workout: blanks its slots and
-// starts a fresh 24h lock. lastLog is untouched here — it only ever gets set
-// by an explicit Save, so "last time" never reflects abandoned scratch input.
-// baselineLog snapshots the previous performance so upgrade-highlighting has
-// a stable target for this whole session, even across multiple saves.
+// starts a fresh lock for today. baselineLog snapshots the previous
+// performance (by exercise name, across any workout) so upgrade-highlighting
+// has a stable target for this whole session, even across multiple saves.
 function startFreshSession(workoutId){
   const w = getWorkout(workoutId);
   if(!w) return;
   w.exercises.forEach(ex => {
     ensureRuntime(ex);
     ex.slots = defaultSlots(ex.sets);
-    ex.baselineLog = ex.lastLog ? ex.lastLog.slice() : null;
+    ex.baselineLog = findLastLoggedSlots(ex.name);
     seqState[ex.id] = [];
   });
   data.activeLock = { id: uid(), workoutId, startedAt: Date.now() };
   saveData();
 }
 
-// logs whatever's currently filled in as "last performance" and upserts a
-// history entry for the active lock (so re-saving the same locked session
-// overrides its own history entry instead of piling up duplicates). Slots
-// are deliberately left as-is so the session can be re-entered and edited
-// again later in the 24h window.
+// logs whatever's currently filled in as history and upserts a history entry
+// for the active lock (so re-saving the same locked session overrides its own
+// history entry instead of piling up duplicates). Slots are deliberately left
+// as-is so the session can be re-entered and edited again the same day.
 function saveSession(workoutId){
   const w = getWorkout(workoutId);
   if(!w) return;
@@ -221,7 +240,6 @@ function saveSession(workoutId){
     ensureRuntime(ex);
     if(ex.slots.some(s => s !== null)){
       const upgrades = ex.slots.map((s,i) => isUpgradeSlot(ex, i));
-      ex.lastLog = ex.slots.slice();
       loggedExercises.push({ name: ex.name, sets: ex.sets, reps: ex.reps, slots: ex.slots.slice(), upgrades });
     }
   });
@@ -333,6 +351,7 @@ function render(){
   else if(view.name === 'history') app.innerHTML = renderHistory();
   else if(view.name === 'auth') app.innerHTML = renderAuth();
   else if(view.name === 'linkPassword') app.innerHTML = renderLinkPassword();
+  else if(view.name === 'editHistory') app.innerHTML = renderEditHistory(view.historyId);
   attachHandlers();
   restoreFocus(app, focusInfo);
 }
@@ -456,7 +475,10 @@ function renderHistory(){
       <div class="history-card">
         <div class="history-head">
           <span class="history-name">${escapeHtml(h.workoutName)}</span>
-          <span class="history-date">${dateStr} · ${timeStr}</span>
+          <span class="row" style="gap:8px">
+            <span class="history-date">${dateStr} · ${timeStr}</span>
+            <button class="icon-btn" style="padding:2px 4px;font-size:15px" data-action="edit-history" data-history="${h.id}" title="Edit this entry">✎</button>
+          </span>
         </div>
         ${exList}
       </div>
@@ -478,6 +500,64 @@ function renderHistory(){
       <div class="footer-space"></div>
     </div>
   `;
+}
+
+// ---------- EDIT HISTORY ----------
+// Editing a past entry directly (rather than reusing the session's tap-a-weight
+// UI) since a history entry isn't tied to any particular weightSets config —
+// the workout it came from may have been edited or deleted since. Plain number
+// inputs let you correct a mistake with any value, not just pre-set weights.
+function renderEditHistory(historyId){
+  const h = data.history.find(x => x.id === historyId);
+  if(!h){ setView({name:'history'}); return ''; }
+
+  const cards = h.exercises.map((ex, exIdx) => {
+    const inputs = ex.slots.map((s,i) => `
+      <input type="number" inputmode="decimal" step="any" class="slot-edit-input" data-history-slot data-ex-index="${exIdx}" data-slot-index="${i}" value="${s !== null ? s : ''}" placeholder="—">
+    `).join('');
+    return `
+      <div class="exercise-session-card">
+        <div class="head">
+          <div>
+            <h3>${escapeHtml(ex.name)}</h3>
+            <div class="meta">${ex.sets} × ${ex.reps} reps</div>
+          </div>
+        </div>
+        <div class="row wrap slots-edit">${inputs}</div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="topbar">
+      <button class="icon-btn" data-action="goto-history">←</button>
+      <div class="title"><h1>Edit Entry</h1></div>
+      <span style="width:36px"></span>
+    </div>
+    <div class="stack session-stack">
+      ${cards}
+      <div class="save-bar-space"></div>
+    </div>
+    <div class="save-bar">
+      <button class="full primary save-btn" data-action="save-history-edit" data-history="${h.id}">Save Changes</button>
+    </div>
+  `;
+}
+
+// recomputes upgrade highlighting for an edited entry against whatever was
+// logged for each exercise name immediately before it (by date), matching how
+// upgrades are judged live during a session.
+function recomputeUpgrades(entry){
+  entry.exercises.forEach(ex => {
+    const target = normalizeExerciseName(ex.name);
+    let baseline = null, bestDate = -Infinity;
+    for(const h of data.history){
+      if(h.id === entry.id || h.date >= entry.date) continue;
+      const match = h.exercises.find(e => normalizeExerciseName(e.name) === target);
+      if(match && h.date > bestDate){ bestDate = h.date; baseline = match.slots; }
+    }
+    ex.upgrades = ex.slots.map((s,i) => s !== null && baseline && baseline[i] != null && s > baseline[i]);
+  });
 }
 
 // ---------- EDIT LIST ----------
@@ -608,7 +688,7 @@ function renderSession(workoutId){
     const weightsHtml = activeWeights.map(wt => `
       <button class="weight-btn" data-action="tap-weight" data-workout="${w.id}" data-exercise="${ex.id}" data-weight="${wt}">${wt}</button>
     `).join('');
-    const lastFormatted = ex.lastLog ? formatSlots(ex.lastLog) : null;
+    const lastFormatted = formatSlots(findLastLoggedSlots(ex.name));
     const lastLine = lastFormatted ? `<div class="last">Last time: ${lastFormatted}</div>` : `<div class="last muted-italic">No history yet</div>`;
 
     // toggle is only useful mid-edit (to reach Type B and add weights) or once
@@ -746,6 +826,23 @@ function attachHandlers(){
     }
     else if(action === 'edit-workout') setView({name:'editWorkout', workoutId: btn.dataset.workout});
     else if(action === 'goto-history') setView({name:'history'});
+    else if(action === 'edit-history') setView({name:'editHistory', historyId: btn.dataset.history});
+    else if(action === 'save-history-edit'){
+      const h = data.history.find(x => x.id === btn.dataset.history);
+      if(h){
+        h.exercises.forEach((ex, exIdx) => {
+          ex.slots = ex.slots.map((_, i) => {
+            const input = app.querySelector(`[data-history-slot][data-ex-index="${exIdx}"][data-slot-index="${i}"]`);
+            const v = input && input.value !== '' ? parseFloat(input.value) : NaN;
+            return isNaN(v) ? null : v;
+          });
+        });
+        recomputeUpgrades(h);
+        saveData();
+        showToast('Entry updated');
+      }
+      setView({name:'history'});
+    }
     else if(action === 'save-session') saveSession(btn.dataset.workout);
     else if(action === 'toggle-edit-mode') setView({ ...view, editMode: !view.editMode });
     else if(action === 'select-weight-set'){
@@ -775,7 +872,7 @@ function attachHandlers(){
 
     else if(action === 'add-exercise'){
       const w = getWorkout(btn.dataset.workout);
-      w.exercises.push({ id: uid(), name: '', sets: 4, reps: 10, weightSets: {a:[], b:[]}, activeSet: 'a', slots: null, lastLog: null, image: null });
+      w.exercises.push({ id: uid(), name: '', sets: 4, reps: 10, weightSets: {a:[], b:[]}, activeSet: 'a', slots: null, image: null });
       saveData();
       render();
     }
@@ -877,7 +974,6 @@ function attachHandlers(){
       const n = parseInt(t.value,10);
       ex.sets = (n>0) ? n : 1;
       ex.slots = defaultSlots(ex.sets);
-      ex.lastLog = null;
       ex.baselineLog = null;
       saveData();
     } else if(t.dataset.field === 'reps'){
