@@ -1,5 +1,5 @@
 import {
-  auth, db, signInEmail, createAccountEmail, resetPasswordEmail, signOutUser, onAuthStateChanged, doc, setDoc, getDoc, onSnapshot
+  auth, db, signInEmail, createAccountEmail, resetPasswordEmail, linkPasswordToAccount, signOutUser, onAuthStateChanged, doc, setDoc, getDoc, onSnapshot
 } from './firebase-init.js';
 
 // ---------- storage ----------
@@ -332,6 +332,7 @@ function render(){
   else if(view.name === 'session') app.innerHTML = renderSession(view.workoutId);
   else if(view.name === 'history') app.innerHTML = renderHistory();
   else if(view.name === 'auth') app.innerHTML = renderAuth();
+  else if(view.name === 'linkPassword') app.innerHTML = renderLinkPassword();
   attachHandlers();
   restoreFocus(app, focusInfo);
 }
@@ -359,6 +360,9 @@ function renderHome(){
       ${currentUser
         ? `<button class="icon-btn" data-action="sign-out" title="Signed in as ${escapeAttr(currentUser.email || '')} — tap to sign out">☁️✓</button>`
         : `<button class="icon-btn" data-action="goto-auth" title="Sign in to sync across devices">☁️</button>`}
+      ${currentUser && !hasPasswordProvider()
+        ? `<button class="icon-btn" data-action="goto-link-password" title="Set a password to sign in with this account on other devices">🔑</button>`
+        : ''}
       <button class="icon-btn" data-action="goto-history" title="Past workouts">⏱</button>
       <button class="icon-btn" data-action="goto-edit-list" title="Edit workouts">✎</button>
     </div>
@@ -367,6 +371,10 @@ function renderHome(){
       ${empty}
     </div>
   `;
+}
+
+function hasPasswordProvider(){
+  return !!(currentUser && currentUser.providerData.some(p => p.providerId === 'password'));
 }
 
 // ---------- AUTH ----------
@@ -405,9 +413,31 @@ function authErrorMessage(err){
     'auth/email-already-in-use': 'An account already exists for that email — tap Sign In instead.',
     'auth/weak-password': 'Password must be at least 6 characters.',
     'auth/missing-password': 'Enter a password.',
-    'auth/too-many-requests': 'Too many attempts — wait a bit and try again.'
+    'auth/too-many-requests': 'Too many attempts — wait a bit and try again.',
+    'auth/credential-already-in-use': 'That email/password is already used by a different (probably empty) account — delete that duplicate in the Firebase console under Authentication → Users, then try again.',
+    'auth/provider-already-linked': 'This account already has a password set.',
+    'auth/requires-recent-login': 'For security, sign out and sign back in, then try again.'
   };
   return map[err.code] || err.message;
+}
+
+function renderLinkPassword(){
+  return `
+    <div class="topbar">
+      <button class="icon-btn" data-action="goto-home">←</button>
+      <div class="title"><h1>Set Password</h1></div>
+      <span style="width:36px"></span>
+    </div>
+    <div class="stack">
+      <div class="small-muted">Signed in as ${escapeHtml(currentUser.email || '')}. Set a password so you can sign in with this same email on other devices (like a pinned home-screen app) without needing Google.</div>
+      <label class="field">
+        New password
+        <input type="password" autocomplete="new-password" data-field="link-password" placeholder="At least 6 characters">
+      </label>
+      <button class="full primary" data-action="link-password-save">Save Password</button>
+      <div class="footer-space"></div>
+    </div>
+  `;
 }
 
 // ---------- HISTORY ----------
@@ -693,6 +723,14 @@ function attachHandlers(){
       if(!email){ alert('Enter your email above first, then tap Forgot password.'); return; }
       resetPasswordEmail(email)
         .then(() => showToast('Password reset email sent'))
+        .catch(err => alert(authErrorMessage(err)));
+    }
+    else if(action === 'goto-link-password') setView({name:'linkPassword'});
+    else if(action === 'link-password-save'){
+      const password = app.querySelector('[data-field="link-password"]').value;
+      if(!password || password.length < 6){ alert('Enter a password of at least 6 characters.'); return; }
+      linkPasswordToAccount(password)
+        .then(() => { showToast('Password set — sign in with this email/password on other devices'); setView({name:'home'}); })
         .catch(err => alert(authErrorMessage(err)));
     }
     else if(action === 'goto-home') setView({name:'home'});

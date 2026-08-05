@@ -1,6 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import {
-  getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged
+  getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged,
+  EmailAuthProvider, linkWithCredential
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import {
   getFirestore, doc, setDoc, getDoc, onSnapshot, enableIndexedDbPersistence
@@ -22,5 +23,14 @@ export function signInEmail(email, password) { return signInWithEmailAndPassword
 export function createAccountEmail(email, password) { return createUserWithEmailAndPassword(auth, email, password); }
 export function resetPasswordEmail(email) { return sendPasswordResetEmail(auth, email); }
 export function signOutUser() { return signOut(auth); }
+
+// attaches a password to the CURRENTLY signed-in account (same uid, same
+// Firestore doc/history) instead of creating a brand-new account — this is
+// what lets a Google-signed-in session (e.g. still logged in from before) add
+// password sign-in without losing/duplicating its data.
+export function linkPasswordToAccount(password) {
+  const cred = EmailAuthProvider.credential(auth.currentUser.email, password);
+  return linkWithCredential(auth.currentUser, cred);
+}
 
 export { onAuthStateChanged, doc, setDoc, getDoc, onSnapshot };
