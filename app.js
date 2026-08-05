@@ -4,7 +4,10 @@ import {
 
 // ---------- storage ----------
 const STORAGE_KEY = 'workoutAppData_v1';
-const LOCK_MS = 24 * 60 * 60 * 1000;
+// tracks when this device last wrote data locally, kept separate from STORAGE_KEY
+// so a cloud fetch can tell "is the cloud copy actually newer than what I have?"
+// instead of blindly overwriting (see saveData/onAuthStateChanged).
+const STORAGE_TS_KEY = 'workoutAppData_v1_ts';
 
 // migrates old-shape data in place: single flat `weights` array -> two named
 // weightSets (a/b), missing activeLock/history defaults.
@@ -32,11 +35,19 @@ function loadData(){
   return { workouts: [], history: [], activeLock: null };
 }
 
-function isLockActive(){
-  return !!(data.activeLock && (Date.now() - data.activeLock.startedAt < LOCK_MS));
+function isSameDay(t1, t2){
+  const d1 = new Date(t1), d2 = new Date(t2);
+  return d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate();
 }
-function isWorkoutLocked(workoutId){
-  return isLockActive() && data.activeLock.workoutId !== workoutId;
+// true if this workout's session is the one currently in progress today, so
+// tapping it again should resume (not blank out) its slots.
+function isResumableToday(workoutId){
+  return !!(data.activeLock && data.activeLock.workoutId === workoutId && isSameDay(data.activeLock.startedAt, Date.now()));
+}
+// finds a history entry for a *different* workout saved earlier today, if any —
+// used to confirm before starting a second workout on the same day.
+function savedDifferentWorkoutToday(workoutId){
+  return data.history.find(h => h.workoutId !== workoutId && isSameDay(h.date, Date.now()));
 }
 
 // true while we're writing data that just came FROM the cloud, so we don't echo it right back up
@@ -47,12 +58,27 @@ let unsubscribeSnapshot = null;
 
 function cloudDocRef(uid){ return doc(db, 'users', uid); }
 
-function saveData(){
+function getLocalUpdatedAt(){
+  return parseInt(localStorage.getItem(STORAGE_TS_KEY) || '0', 10);
+}
+
+// applies a freshly-fetched/streamed remote payload as the new local state.
+function applyRemote(remotePayload, remoteUpdatedAt){
+  applyingRemote = true;
+  data = normalizeData(JSON.parse(remotePayload));
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  localStorage.setItem(STORAGE_TS_KEY, String(remoteUpdatedAt));
+  applyingRemote = false;
+}
+
+function saveData(){
+  const now = Date.now();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  localStorage.setItem(STORAGE_TS_KEY, String(now));
   if(currentUser && !applyingRemote){
     clearTimeout(cloudSaveTimer);
     cloudSaveTimer = setTimeout(() => {
-      setDoc(cloudDocRef(currentUser.uid), { payload: JSON.stringify(data), updatedAt: Date.now() }).catch(()=>{});
+      setDoc(cloudDocRef(currentUser.uid), { payload: JSON.stringify(data), updatedAt: now }).catch(()=>{});
     }, 600);
   }
 }
@@ -65,21 +91,30 @@ onAuthStateChanged(auth, async (user) => {
     const ref = cloudDocRef(user.uid);
     const snap = await getDoc(ref);
     if(snap.exists()){
-      applyingRemote = true;
-      data = normalizeData(JSON.parse(snap.data().payload));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      applyingRemote = false;
+      const remoteUpdatedAt = snap.data().updatedAt || 0;
+      const localUpdatedAt = getLocalUpdatedAt();
+      // only take the cloud copy if it's actually newer than what's on this
+      // device — otherwise a debounced write that never made it to the cloud
+      // before the app closed (backgrounding, tab kill, etc.) would get
+      // silently reverted by this fetch, wiping the last workout/session.
+      if(remoteUpdatedAt > localUpdatedAt){
+        applyRemote(snap.data().payload, remoteUpdatedAt);
+      } else if(localUpdatedAt > remoteUpdatedAt){
+        // local is ahead (that debounced write really did get lost) — push it now
+        setDoc(ref, { payload: JSON.stringify(data), updatedAt: localUpdatedAt }).catch(()=>{});
+      }
     } else {
-      await setDoc(ref, { payload: JSON.stringify(data), updatedAt: Date.now() });
+      const now = Date.now();
+      await setDoc(ref, { payload: JSON.stringify(data), updatedAt: now });
+      localStorage.setItem(STORAGE_TS_KEY, String(now));
     }
     unsubscribeSnapshot = onSnapshot(ref, (snap) => {
       if(!snap.exists()) return;
       // skip echoes of our own writes so typing doesn't get interrupted by a re-render
       if(snap.metadata.hasPendingWrites) return;
-      applyingRemote = true;
-      data = normalizeData(JSON.parse(snap.data().payload));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      applyingRemote = false;
+      const remoteUpdatedAt = snap.data().updatedAt || 0;
+      if(remoteUpdatedAt <= getLocalUpdatedAt()) return;
+      applyRemote(snap.data().payload, remoteUpdatedAt);
       render();
     });
   }
@@ -302,18 +337,15 @@ function render(){
 
 // ---------- HOME ----------
 function renderHome(){
-  const list = data.workouts.map(w => {
-    const locked = isWorkoutLocked(w.id);
-    return `
-    <button class="workout-btn${locked ? ' locked' : ''}" ${locked ? 'disabled' : `data-action="start"`} data-workout="${w.id}">
+  const list = data.workouts.map(w => `
+    <button class="workout-btn" data-action="start" data-workout="${w.id}">
       <span>
         ${escapeHtml(w.name)}
-        <span class="sub">${w.exercises.length} exercise${w.exercises.length===1?'':'s'}${locked ? ' · Locked' : ''}</span>
+        <span class="sub">${w.exercises.length} exercise${w.exercises.length===1?'':'s'}</span>
       </span>
-      <span class="chev">${locked ? '🔒' : '›'}</span>
+      <span class="chev">›</span>
     </button>
-  `;
-  }).join('');
+  `).join('');
 
   const empty = data.workouts.length === 0 ? `
     <div class="empty-state">
@@ -611,9 +643,11 @@ function attachHandlers(){
     else if(action === 'goto-edit-list') setView({name:'editList'});
     else if(action === 'start'){
       const workoutId = btn.dataset.workout;
-      if(isWorkoutLocked(workoutId)) return;
-      const resuming = data.activeLock && data.activeLock.workoutId === workoutId && isLockActive();
-      if(!resuming) startFreshSession(workoutId);
+      if(!isResumableToday(workoutId)){
+        const already = savedDifferentWorkoutToday(workoutId);
+        if(already && !confirm(`You already saved "${already.workoutName}" today. Start this workout too?`)) return;
+        startFreshSession(workoutId);
+      }
       setView({name:'session', workoutId});
     }
     else if(action === 'edit-workout') setView({name:'editWorkout', workoutId: btn.dataset.workout});
