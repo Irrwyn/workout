@@ -154,7 +154,7 @@ button:active{transform:scale(0.96);}
 
 .full{width:100%;}
 
-input[type="text"], input[type="number"]{
+input[type="text"], input[type="number"], input[type="email"], input[type="password"]{
   background:var(--bg2);
   border:1px solid var(--line);
   color:var(--ink);
@@ -164,7 +164,7 @@ input[type="text"], input[type="number"]{
   width:100%;
   font-family:inherit;
 }
-input[type="text"]:focus, input[type="number"]:focus{
+input[type="text"]:focus, input[type="number"]:focus, input[type="email"]:focus, input[type="password"]:focus{
   outline:none;
   border-color:var(--red);
 }

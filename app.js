@@ -1,5 +1,5 @@
 import {
-  auth, db, signIn, signOutUser, onAuthStateChanged, doc, setDoc, getDoc, onSnapshot
+  auth, db, signInEmail, createAccountEmail, resetPasswordEmail, signOutUser, onAuthStateChanged, doc, setDoc, getDoc, onSnapshot
 } from './firebase-init.js';
 
 // ---------- storage ----------
@@ -331,6 +331,7 @@ function render(){
   else if(view.name === 'editWorkout') app.innerHTML = renderEditWorkout(view.workoutId);
   else if(view.name === 'session') app.innerHTML = renderSession(view.workoutId);
   else if(view.name === 'history') app.innerHTML = renderHistory();
+  else if(view.name === 'auth') app.innerHTML = renderAuth();
   attachHandlers();
   restoreFocus(app, focusInfo);
 }
@@ -356,8 +357,8 @@ function renderHome(){
     <div class="topbar">
       <div class="title"><h1>Workout</h1></div>
       ${currentUser
-        ? `<button class="icon-btn" data-action="sign-out" title="Signed in as ${escapeAttr(currentUser.email || currentUser.displayName || '')} — tap to sign out">☁️✓</button>`
-        : `<button class="icon-btn" data-action="sign-in" title="Sign in to sync across devices">☁️</button>`}
+        ? `<button class="icon-btn" data-action="sign-out" title="Signed in as ${escapeAttr(currentUser.email || '')} — tap to sign out">☁️✓</button>`
+        : `<button class="icon-btn" data-action="goto-auth" title="Sign in to sync across devices">☁️</button>`}
       <button class="icon-btn" data-action="goto-history" title="Past workouts">⏱</button>
       <button class="icon-btn" data-action="goto-edit-list" title="Edit workouts">✎</button>
     </div>
@@ -366,6 +367,47 @@ function renderHome(){
       ${empty}
     </div>
   `;
+}
+
+// ---------- AUTH ----------
+function renderAuth(){
+  return `
+    <div class="topbar">
+      <button class="icon-btn" data-action="goto-home">←</button>
+      <div class="title"><h1>Sync</h1></div>
+      <span style="width:36px"></span>
+    </div>
+    <div class="stack">
+      <label class="field">
+        Email
+        <input type="email" inputmode="email" autocomplete="email" data-field="auth-email" placeholder="you@example.com">
+      </label>
+      <label class="field">
+        Password
+        <input type="password" autocomplete="current-password" data-field="auth-password" placeholder="At least 6 characters">
+      </label>
+      <button class="full primary" data-action="auth-sign-in">Sign In</button>
+      <button class="full ghost" data-action="auth-create-account">Create Account</button>
+      <button class="reset-link" style="align-self:center" data-action="auth-forgot-password">Forgot password?</button>
+      <div class="footer-space"></div>
+    </div>
+  `;
+}
+
+// maps Firebase's auth error codes to messages that make sense to someone
+// who's never heard of Firebase.
+function authErrorMessage(err){
+  const map = {
+    'auth/invalid-email': 'That email address looks invalid.',
+    'auth/user-not-found': 'No account found for that email — tap Create Account.',
+    'auth/wrong-password': 'Wrong password.',
+    'auth/invalid-credential': 'Wrong email or password.',
+    'auth/email-already-in-use': 'An account already exists for that email — tap Sign In instead.',
+    'auth/weak-password': 'Password must be at least 6 characters.',
+    'auth/missing-password': 'Enter a password.',
+    'auth/too-many-requests': 'Too many attempts — wait a bit and try again.'
+  };
+  return map[err.code] || err.message;
 }
 
 // ---------- HISTORY ----------
@@ -633,11 +675,25 @@ function attachHandlers(){
     if(!btn) return;
     const action = btn.dataset.action;
 
-    if(action === 'sign-in'){
-      signIn().catch(err => alert('Sign-in failed: ' + err.message));
-    }
+    if(action === 'goto-auth') setView({name:'auth'});
     else if(action === 'sign-out'){
       if(confirm('Sign out? Your data will stay on this device but stop syncing.')) signOutUser();
+    }
+    else if(action === 'auth-sign-in' || action === 'auth-create-account'){
+      const email = app.querySelector('[data-field="auth-email"]').value.trim();
+      const password = app.querySelector('[data-field="auth-password"]').value;
+      if(!email || !password){ alert('Enter an email and password.'); return; }
+      const fn = action === 'auth-sign-in' ? signInEmail : createAccountEmail;
+      fn(email, password)
+        .then(() => setView({name:'home'}))
+        .catch(err => alert(authErrorMessage(err)));
+    }
+    else if(action === 'auth-forgot-password'){
+      const email = app.querySelector('[data-field="auth-email"]').value.trim();
+      if(!email){ alert('Enter your email above first, then tap Forgot password.'); return; }
+      resetPasswordEmail(email)
+        .then(() => showToast('Password reset email sent'))
+        .catch(err => alert(authErrorMessage(err)));
     }
     else if(action === 'goto-home') setView({name:'home'});
     else if(action === 'goto-edit-list') setView({name:'editList'});
